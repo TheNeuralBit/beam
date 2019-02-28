@@ -32,6 +32,7 @@ from parameterized import parameterized
 
 from apache_beam import Create
 from apache_beam import Map
+from apache_beam import FlatMap
 from apache_beam.io import filebasedsource
 from apache_beam.io import source_test_utils
 from apache_beam.io.iobase import RangeTracker
@@ -113,6 +114,23 @@ class TestParquet(unittest.TestCase):
       col_list.append(column)
     return col_list
 
+  def _records_as_arrow(self, schema=None, count=None):
+    if schema is None:
+      schema = self.SCHEMA
+
+    if count is None:
+      count = len(self.RECORDS)
+
+    len_records = len(self.RECORDS)
+    data = []
+    for i in range(count):
+      data.append(self.RECORDS[i % len_records])
+    col_data = self._record_to_columns(data, schema)
+    col_array = [
+        pa.array(c, schema.types[cn]) for cn, c in enumerate(col_data)
+    ]
+    return pa.Table.from_arrays(col_array, schema.names)
+
   def _write_data(self,
                   directory=None,
                   schema=None,
@@ -120,26 +138,12 @@ class TestParquet(unittest.TestCase):
                   row_group_size=1000,
                   codec='none',
                   count=None):
-    if schema is None:
-      schema = self.SCHEMA
-
     if directory is None:
       directory = self.temp_dir
 
-    if count is None:
-      count = len(self.RECORDS)
-
     with tempfile.NamedTemporaryFile(
         delete=False, dir=directory, prefix=prefix) as f:
-      len_records = len(self.RECORDS)
-      data = []
-      for i in range(count):
-        data.append(self.RECORDS[i % len_records])
-      col_data = self._record_to_columns(data, schema)
-      col_array = [
-          pa.array(c, schema.types[cn]) for cn, c in enumerate(col_data)
-      ]
-      table = pa.Table.from_arrays(col_array, schema.names)
+      table = self._records_as_arrow(schema, count)
       pq.write_table(
           table, f, row_group_size=row_group_size, compression=codec,
           use_deprecated_int96_timestamps=True
@@ -292,6 +296,21 @@ class TestParquet(unittest.TestCase):
             | ReadFromParquet(path) \
             | Map(json.dumps)
         assert_that(readback, equal_to([json.dumps(r) for r in self.RECORDS]))
+
+  def test_batched_read(self):
+    with tempfile.NamedTemporaryFile() as dst:
+      path = dst.name
+      with TestPipeline() as p:
+        _ = p \
+        | Create(self.RECORDS) \
+        | WriteToParquet(
+            path, self.SCHEMA, num_shards=1, shard_name_template='')
+      with TestPipeline() as p:
+        # json used for stable sortability
+        readback = \
+            p \
+            | ReadFromParquet(path, batched=True)
+        assert_that(readback, equal_to([self._records_as_arrow()], equality_check=lambda e,a: e.equals(a)))
 
   @parameterized.expand([
       param(compression_type='snappy'),

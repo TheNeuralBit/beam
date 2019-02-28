@@ -112,7 +112,7 @@ def equal_to_per_window(expected_window_to_elements):
 # Note that equal_to checks if expected and actual are permutations of each
 # other. However, only permutations of the top level are checked. Therefore
 # [1,2] and [2,1] are considered equal and [[1,2]] and [[2,1]] are not.
-def equal_to(expected):
+def equal_to(expected, equality_check=None):
 
   def _equal(actual):
     expected_list = list(expected)
@@ -123,9 +123,9 @@ def equal_to(expected):
     try:
       sorted_expected = sorted(expected)
       sorted_actual = sorted(actual)
-      if sorted_expected != sorted_actual:
+      if not all(e == a for e,a in zip(sorted_expected, sorted_actual)):
         raise BeamAssertException(
-            'Failed assert: %r == %r' % (sorted_expected, sorted_actual))
+            'Failed assert: %s == %s' % (sorted_expected, sorted_actual))
     # Fall back to slower method which works for different types on Python 3.
     except TypeError:
       for element in actual:
@@ -138,7 +138,16 @@ def equal_to(expected):
         raise BeamAssertException(
             'Failed assert: %r == %r' % (expected, actual))
 
-  return _equal
+  def _custom_equal(actual):
+    expected_list = list(expected)
+
+    sorted_expected = sorted(expected)
+    sorted_actual = sorted(actual)
+    if not all(equality_check(e,a) for e,a in zip(sorted_expected, sorted_actual)):
+      raise BeamAssertException(
+          'Failed assert: %s == %s' % (sorted_expected, sorted_actual))
+
+  return _equal if equality_check is None else _custom_equal
 
 
 def is_empty():

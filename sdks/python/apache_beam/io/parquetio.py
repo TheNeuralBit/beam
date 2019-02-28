@@ -54,7 +54,7 @@ class ReadFromParquet(PTransform):
      backward-compatibility guarantees."""
 
   def __init__(self, file_pattern=None, min_bundle_size=0,
-               validate=True, columns=None):
+               validate=True, columns=None, batched=False):
     """Initializes :class:`ReadFromParquet`.
 
     Uses source ``_ParquetSource`` to read a set of Parquet files defined by
@@ -88,6 +88,28 @@ class ReadFromParquet(PTransform):
     Python list and dictionary respectively. For more information on supported
     types and schema, please see the pyarrow document.
 
+    Alternatively, when created with `batched=True`, each element of the
+    :class:`~apache_beam.pvalue.PCollection` will contain a pyarrow Table.
+    These Table instances can be processed directly, or converted to a pandas
+    DataFrame for processing.
+
+    .. testcode::
+
+      with beam.Pipeline() as p:
+        dataframes = p \
+            | 'Read' >> beam.io.ReadFromParquet('/mypath/mypqfiles*') \
+            | 'Convert to pandas' >> beam.Map(lambda table: table.to_pandas())
+
+    .. NOTE: We're not actually interested in this error; but if we get here,
+       it means that the way of calling this transform hasn't changed.
+
+    .. testoutput::
+      :hide:
+
+      Traceback (most recent call last):
+       ...
+      IOError: No files found based on the file pattern
+
 
     Args:
       file_pattern (str): the file glob to read
@@ -98,13 +120,16 @@ class ReadFromParquet(PTransform):
       columns (List[str]): list of columns that will be read from files.
         A column name may be a prefix of a nested field, e.g. 'a' will select
         'a.b', 'a.c', and 'a.d.e'
+      batched (bool): if True yield raw pyarrow tables rather than splitting
+        each table into dictionaries per row.
 """
     super(ReadFromParquet, self).__init__()
     self._source = _create_parquet_source(
         file_pattern,
         min_bundle_size,
         validate=validate,
-        columns=columns
+        columns=columns,
+        batched=batched
     )
 
   def expand(self, pvalue):
@@ -159,13 +184,15 @@ class ReadAllFromParquet(PTransform):
 def _create_parquet_source(file_pattern=None,
                            min_bundle_size=0,
                            validate=False,
-                           columns=None):
+                           columns=None,
+                           batched=False):
   return \
     _ParquetSource(
         file_pattern=file_pattern,
         min_bundle_size=min_bundle_size,
         validate=validate,
-        columns=columns
+        columns=columns,
+        batched=batched
     )
 
 
@@ -195,13 +222,14 @@ class _ParquetUtils(object):
 class _ParquetSource(filebasedsource.FileBasedSource):
   """A source for reading Parquet files.
   """
-  def __init__(self, file_pattern, min_bundle_size, validate, columns):
+  def __init__(self, file_pattern, min_bundle_size, validate, columns, batched):
     super(_ParquetSource, self).__init__(
         file_pattern=file_pattern,
         min_bundle_size=min_bundle_size,
         validate=validate
     )
     self._columns = columns
+    self._batched = batched
 
   def read_records(self, file_name, range_tracker):
     next_block_start = -1
@@ -244,13 +272,16 @@ class _ParquetSource(filebasedsource.FileBasedSource):
         else:
           next_block_start = range_tracker.stop_position()
 
-        num_rows = table.num_rows
-        data_items = table.to_pydict().items()
-        for n in range(num_rows):
-          row = {}
-          for column, values in data_items:
-            row[column] = values[n]
-          yield row
+        if self._batched:
+          yield table
+        else:
+          num_rows = table.num_rows
+          data_items = table.to_pydict().items()
+          for n in range(num_rows):
+            row = {}
+            for column, values in data_items:
+              row[column] = values[n]
+            yield row
 
 
 class WriteToParquet(PTransform):
