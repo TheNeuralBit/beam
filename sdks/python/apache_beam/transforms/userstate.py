@@ -44,6 +44,19 @@ class StateSpec(object):
   def to_runner_api(self, context):
     raise NotImplementedError
 
+class ValueStateSpec(StateSpec):
+  """Specification for a user DoFn bag state cell."""
+
+  def __init__(self, name, coder):
+    assert isinstance(name, str)
+    assert isinstance(coder, Coder)
+    self.name = name
+    self.coder = coder
+
+  def to_runner_api(self, context):
+    return beam_runner_api_pb2.StateSpec(
+        bag_spec=beam_runner_api_pb2.ValueStateSpec(
+            element_coder_id=context.coders.get_id(self.coder)))
 
 class BagStateSpec(StateSpec):
   """Specification for a user DoFn bag state cell."""
@@ -232,6 +245,9 @@ class RuntimeState(object):
     elif isinstance(state_spec, CombiningValueStateSpec):
       return CombiningValueRuntimeState(state_spec, state_tag,
                                         current_value_accessor)
+    elif isinstance(state_spec, ValueStateSpec):
+      return ValueRuntimeState(state_spec, state_tag,
+                                        current_value_accessor)
     else:
       raise ValueError('Invalid state spec: %s' % state_spec)
 
@@ -249,6 +265,14 @@ class RuntimeState(object):
 # Sentinel designating an unread value.
 UNREAD_VALUE = object()
 
+class ValueRuntimeState(RuntimeState):
+  """Value state interface object passed to user code."""
+
+  def __init__(self, state_spec, state_tag, current_value_accessor):
+    super(ValueRuntimeState, self).__init__(
+        state_spec, state_tag, current_value_accessor)
+    self._current_accumulator = UNREAD_VALUE
+    self._modified = False
 
 class BagRuntimeState(RuntimeState):
   """Bag state interface object passed to user code."""
