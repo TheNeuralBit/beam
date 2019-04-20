@@ -35,6 +35,7 @@ from apache_beam.transforms.combiners import ToListCombineFn
 from apache_beam.transforms.combiners import TopCombineFn
 from apache_beam.transforms.core import DoFn
 from apache_beam.transforms.timeutil import TimeDomain
+from apache_beam.transforms.userstate import ValueStateSpec
 from apache_beam.transforms.userstate import BagStateSpec
 from apache_beam.transforms.userstate import CombiningValueStateSpec
 from apache_beam.transforms.userstate import TimerSpec
@@ -99,6 +100,9 @@ class InterfaceTest(unittest.TestCase):
     userstate.validate_stateful_dofn.assert_called_with(dofn)
 
   def test_spec_construction(self):
+    ValueStateSpec('statename', VarIntCoder())
+    with self.assertRaises(AssertionError):
+      ValueStateSpec(123, VarIntCoder())
     BagStateSpec('statename', VarIntCoder())
     with self.assertRaises(AssertionError):
       BagStateSpec(123, VarIntCoder())
@@ -374,6 +378,44 @@ class StatefulDoFnOnDirectRunnerTest(unittest.TestCase):
         ('Input elements to the transform .* with stateful DoFn must be '
          'key-value pairs.')):
       values | beam.ParDo(TestStatefulDoFn())
+
+  def test_simple_stateful_dofn_value(self):
+    class SimpleTestStatefulDoFn(DoFn):
+      COUNTER_STATE = ValueStateSpec('counter', VarIntCoder())
+      EXPIRY_TIMER = TimerSpec('expiry', TimeDomain.WATERMARK)
+
+      def process(self, element, counter=DoFn.StateParam(COUNTER_STATE),
+                  timer1=DoFn.TimerParam(EXPIRY_TIMER)):
+        unused_key, value = element
+        counter_value = counter.read()
+        counter_value = 0 if not isinstance(counter_value, int) else counter_value
+        counter.set(counter_value + 1);
+        timer1.set(20)
+
+      @on_timer(EXPIRY_TIMER)
+      def expiry_callback(self, counter=DoFn.StateParam(COUNTER_STATE),
+                          timer=DoFn.TimerParam(EXPIRY_TIMER)):
+        yield counter.read()
+
+    with TestPipeline() as p:
+      test_stream = (TestStream()
+                     .advance_watermark_to(10)
+                     .add_elements([1, 2])
+                     .add_elements([3])
+                     .advance_watermark_to(25)
+                     .add_elements([4]))
+      (p
+       | test_stream
+       | beam.Map(lambda x: ('mykey', x))
+       | beam.ParDo(SimpleTestStatefulDoFn())
+       | beam.ParDo(self.record_dofn()))
+
+    # Two firings should occur: once after element 3 since the timer should
+    # fire after the watermark passes time 20, and another time after element
+    # 4, since the timer issued at that point should fire immediately.
+    self.assertEqual(
+        [3, 4],
+        StatefulDoFnOnDirectRunnerTest.all_records)
 
   def test_simple_stateful_dofn_combining(self):
     class SimpleTestStatefulDoFn(DoFn):

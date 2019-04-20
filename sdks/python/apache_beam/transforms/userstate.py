@@ -55,8 +55,8 @@ class ValueStateSpec(StateSpec):
 
   def to_runner_api(self, context):
     return beam_runner_api_pb2.StateSpec(
-        bag_spec=beam_runner_api_pb2.ValueStateSpec(
-            element_coder_id=context.coders.get_id(self.coder)))
+        value_spec=beam_runner_api_pb2.ValueStateSpec(
+            coder_id=context.coders.get_id(self.coder)))
 
 class BagStateSpec(StateSpec):
   """Specification for a user DoFn bag state cell."""
@@ -271,8 +271,19 @@ class ValueRuntimeState(RuntimeState):
   def __init__(self, state_spec, state_tag, current_value_accessor):
     super(ValueRuntimeState, self).__init__(
         state_spec, state_tag, current_value_accessor)
-    self._current_accumulator = UNREAD_VALUE
+    self._value = UNREAD_VALUE
     self._modified = False
+
+  def read(self):
+    if self._value is UNREAD_VALUE:
+      self._value = self._current_value_accessor()
+      # TODO: Why is current value initialized to a list?
+      if not isinstance(self._value, list): self._value = self._decode(self._value)
+    return self._value
+
+  def set(self, value):
+    self._modified = True
+    self._value = value
 
 class BagRuntimeState(RuntimeState):
   """Bag state interface object passed to user code."""
