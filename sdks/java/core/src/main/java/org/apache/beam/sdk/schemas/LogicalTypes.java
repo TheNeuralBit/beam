@@ -22,6 +22,7 @@ import static org.apache.beam.vendor.guava.v26_0_jre.com.google.common.base.Prec
 import java.util.Arrays;
 import org.apache.beam.sdk.schemas.Schema.FieldType;
 import org.apache.beam.sdk.schemas.Schema.LogicalType;
+import org.joda.time.ReadableInstant;
 
 /** A collection of common {@link Schema.LogicalType} classes. */
 public class LogicalTypes {
@@ -109,6 +110,43 @@ public class LogicalTypes {
       } else {
         return Arrays.copyOf(base, byteArraySize);
       }
+    }
+  }
+
+  /**
+   * A logical type representing a timestamp ({@link ReadableInstant}) as milliseconds since the
+   * epoch.
+   */
+  public static class MillisInstant implements LogicalType<ReadableInstant, Long> {
+    public static final String IDENTIFIER = "millis-instant";
+
+    public static MillisInstant of() {
+      return new MillisInstant();
+    }
+
+    @Override
+    public String getIdentifier() {
+      return IDENTIFIER;
+    }
+
+    @Override
+    public String getArgument() {
+      return "";
+    }
+
+    @Override
+    public FieldType getBaseType() {
+      return FieldType.INT64;
+    }
+
+    @Override
+    public Long toBaseType(ReadableInstant instant) {
+      return instant.getMillis();
+    }
+
+    @Override
+    public ReadableInstant toInputType(Long millis) {
+      return org.joda.time.Instant.ofEpochMilli(millis);
     }
   }
 }

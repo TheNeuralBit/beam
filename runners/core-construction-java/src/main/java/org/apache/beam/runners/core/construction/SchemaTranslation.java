@@ -17,18 +17,25 @@
  */
 package org.apache.beam.runners.core.construction;
 
+import static org.apache.beam.vendor.grpc.v1p21p0.com.google.common.collect.ImmutableMap.toImmutableMap;
+
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Function;
 import org.apache.beam.model.pipeline.v1.SchemaApi;
+import org.apache.beam.sdk.schemas.LogicalTypes;
 import org.apache.beam.sdk.schemas.Schema;
 import org.apache.beam.sdk.schemas.Schema.Field;
 import org.apache.beam.sdk.schemas.Schema.FieldType;
 import org.apache.beam.sdk.schemas.Schema.LogicalType;
 import org.apache.beam.sdk.schemas.Schema.TypeName;
+import org.apache.beam.vendor.grpc.v1p21p0.com.google.common.collect.ImmutableMap;
+import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableList;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Maps;
 
 /** Utility methods for translating schemas. */
 public class SchemaTranslation {
+
   private static final String URN_BEAM_LOGICAL_DATETIME = "beam:fieldtype:datetime";
   private static final String URN_BEAM_LOGICAL_DECIMAL = "beam:fieldtype:decimal";
 
@@ -37,7 +44,7 @@ public class SchemaTranslation {
     SchemaApi.Schema.Builder builder = SchemaApi.Schema.newBuilder().setId(uuid);
     for (Field field : schema.getFields()) {
       SchemaApi.Field protoField =
-          toProto(
+          fieldTypeToProto(
               field,
               schema.indexOf(field.getName()),
               schema.getEncodingPositions().get(field.getName()));
@@ -46,17 +53,17 @@ public class SchemaTranslation {
     return builder.build();
   }
 
-  private static SchemaApi.Field toProto(Field field, int fieldId, int position) {
+  private static SchemaApi.Field fieldTypeToProto(Field field, int fieldId, int position) {
     return SchemaApi.Field.newBuilder()
         .setName(field.getName())
         .setDescription(field.getDescription())
-        .setType(toProto(field.getType()))
+        .setType(fieldTypeToProto(field.getType()))
         .setId(fieldId)
         .setEncodingPosition(position)
         .build();
   }
 
-  private static SchemaApi.FieldType toProto(FieldType fieldType) {
+  private static SchemaApi.FieldType fieldTypeToProto(FieldType fieldType) {
     SchemaApi.FieldType.Builder builder = SchemaApi.FieldType.newBuilder();
     switch (fieldType.getTypeName()) {
       case ROW:
@@ -67,25 +74,19 @@ public class SchemaTranslation {
       case ARRAY:
         builder.setArrayType(
             SchemaApi.ArrayType.newBuilder()
-                .setElementType(toProto(fieldType.getCollectionElementType())));
+                .setElementType(fieldTypeToProto(fieldType.getCollectionElementType())));
         break;
 
       case MAP:
         builder.setMapType(
             SchemaApi.MapType.newBuilder()
-                .setKeyType(toProto(fieldType.getMapKeyType()))
-                .setValueType(toProto(fieldType.getMapValueType()))
+                .setKeyType(fieldTypeToProto(fieldType.getMapKeyType()))
+                .setValueType(fieldTypeToProto(fieldType.getMapValueType()))
                 .build());
         break;
 
       case LOGICAL_TYPE:
-        LogicalType logicalType = fieldType.getLogicalType();
-        builder.setLogicalType(
-            SchemaApi.LogicalType.newBuilder()
-                .setUrn(logicalType.getIdentifier())
-                .setArgs(logicalType.getArgument())
-                .setRepresentation(toProto(logicalType.getBaseType()))
-                .build());
+        builder.setLogicalType(LogicalTypeTranslation.toProto(fieldType.getLogicalType()));
         break;
         // Special-case for DATETIME and DECIMAL which are logical types in portable representation,
         // but not yet in Java. (BEAM-7554)
@@ -93,14 +94,14 @@ public class SchemaTranslation {
         builder.setLogicalType(
             SchemaApi.LogicalType.newBuilder()
                 .setUrn(URN_BEAM_LOGICAL_DATETIME)
-                .setRepresentation(toProto(FieldType.INT64))
+                .setRepresentation(fieldTypeToProto(FieldType.INT64))
                 .build());
         break;
       case DECIMAL:
         builder.setLogicalType(
             SchemaApi.LogicalType.newBuilder()
                 .setUrn(URN_BEAM_LOGICAL_DECIMAL)
-                .setRepresentation(toProto(FieldType.BYTES))
+                .setRepresentation(fieldTypeToProto(FieldType.BYTES))
                 .build());
         break;
       case BYTE:
@@ -212,12 +213,92 @@ public class SchemaTranslation {
         } else if (urn.equals(URN_BEAM_LOGICAL_DECIMAL)) {
           return FieldType.DECIMAL;
         } else {
-          // TODO(BEAM-7855): Look up logical type class by URN.
-          throw new IllegalArgumentException("Decoding logical types is not yet supported.");
+          return FieldType.logicalType(
+              LogicalTypeTranslation.fromProto(protoFieldType.getLogicalType()));
         }
       default:
         throw new IllegalArgumentException(
             "Unexpected type_info: " + protoFieldType.getTypeInfoCase());
+    }
+  }
+
+  private static class LogicalTypeTranslation {
+    private static class LogicalTypeTranslator<T extends LogicalType> {
+      private final String urn;
+      private final Class<T> clazz;
+      private final Function<String, T> typeFromArgs;
+
+      public LogicalTypeTranslator(String urn, Class<T> clazz, Function<String, T> typeFromArgs) {
+        this.urn = urn;
+        this.clazz = clazz;
+        this.typeFromArgs = typeFromArgs;
+      }
+
+      public static <T extends LogicalType> LogicalTypeTranslator<T> of(
+          String urn, Class<T> clazz, Function<String, T> typeFromArgs) {
+        return new LogicalTypeTranslator<>(urn, clazz, typeFromArgs);
+      }
+
+      public String getUrn() {
+        return urn;
+      }
+
+      public Class<T> getClazz() {
+        return clazz;
+      }
+
+      public Function<String, T> getTypeFromArgs() {
+        return typeFromArgs;
+      }
+    }
+
+    private static final ImmutableList<LogicalTypeTranslator<?>> LOGICAL_TYPE_TRANSLATORS =
+        ImmutableList.of(
+            LogicalTypeTranslator.of(
+                "beam:fieldtype:fixedbytes",
+                LogicalTypes.FixedBytes.class,
+                (String args) -> LogicalTypes.FixedBytes.of(Integer.parseInt(args))),
+            LogicalTypeTranslator.of(
+                "beam:fieldtype:millis-instant",
+                LogicalTypes.MillisInstant.class,
+                (String args) -> LogicalTypes.MillisInstant.of()));
+
+    private static final ImmutableMap<Class<? extends LogicalType>, String> URN_BY_CLASS =
+        LOGICAL_TYPE_TRANSLATORS.stream()
+            .collect(
+                toImmutableMap(LogicalTypeTranslator::getClazz, LogicalTypeTranslator::getUrn));
+
+    private static final ImmutableMap<String, Function<String, ? extends LogicalType>>
+        BUILDER_BY_URN =
+            LOGICAL_TYPE_TRANSLATORS.stream()
+                .collect(
+                    toImmutableMap(
+                        LogicalTypeTranslator::getUrn, LogicalTypeTranslator::getTypeFromArgs));
+
+    public static SchemaApi.LogicalType toProto(LogicalType logicalTypeInstance) {
+      String urn = URN_BY_CLASS.get(logicalTypeInstance.getClass());
+      if (urn == null) {
+        throw new IllegalArgumentException(
+            "Cannot encode unknown LogicalType class, "
+                + logicalTypeInstance.getClass()
+                + ", to proto.");
+      }
+      String args = logicalTypeInstance.getArgument();
+      return SchemaApi.LogicalType.newBuilder()
+          .setArgs(args)
+          .setUrn(urn)
+          .setRepresentation(fieldTypeToProto(logicalTypeInstance.getBaseType()))
+          .build();
+    }
+
+    public static LogicalType fromProto(SchemaApi.LogicalType logicalTypeProto) {
+      String urn = logicalTypeProto.getUrn();
+      String args = logicalTypeProto.getArgs();
+      Function<String, ? extends LogicalType> builder = BUILDER_BY_URN.get(urn);
+      if (builder == null) {
+        throw new IllegalArgumentException("Encountered unsupported URN: \"" + urn + "\"");
+      }
+      return builder.apply(args);
     }
   }
 }
