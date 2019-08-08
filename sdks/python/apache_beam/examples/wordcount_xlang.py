@@ -23,10 +23,12 @@ import argparse
 import logging
 import re
 import subprocess
+from typing import NamedTuple
 
 import grpc
 
 import apache_beam as beam
+from apache_beam import coders
 from apache_beam.io import ReadFromText
 from apache_beam.io import WriteToText
 from apache_beam.options.pipeline_options import PipelineOptions
@@ -61,29 +63,27 @@ class WordExtractingDoFn(beam.DoFn):
     words = [bytes(x) for x in re.findall(r'[\w\']+', text_line)]
     return words
 
+Row = NamedTuple('Row', [('word', unicode)])
+coders.registry.register_coder(Row, coders.RowCoder)
+
+QUERY = 'SELECT word as key, COUNT(*) as c FROM PCOLLECTION GROUP BY word'
+#QUERY = 'SELECT word as key, COUNT(*) as c FROM PCOLLECTION GROUP BY word ORDER BY c DESC LIMIT 100'
+#QUERY = """
+#SELECT len as key, COUNT(*) as c FROM (
+#  SELECT LENGTH(word) AS len FROM PCOLLECTION
+#) GROUP BY len
+#"""
+
+
 
 def run(p, input_file, output_file):
-  # Read the text file[pattern] into a PCollection.
-  lines = p | 'read' >> ReadFromText(input_file)
-
-  counts = (lines
-            | 'split' >> (beam.ParDo(WordExtractingDoFn())
-                          .with_output_types(bytes))
-            | 'sql' >> beam.ExternalTransform(
-                'pytest:beam:transforms:sql', None, EXPANSION_SERVICE_ADDR)
-            | 'count' >> beam.ExternalTransform(
-                'pytest:beam:transforms:count', None, EXPANSION_SERVICE_ADDR))
-
-  # Format the counts into a PCollection of strings.
-  def format_result(word_count):
-    (word, count) = word_count
-    return '%s: %d' % (word, count)
-
-  output = counts | 'format' >> beam.Map(format_result)
-
-  # Write the output using a "Write" transform that has side effects.
-  # pylint: disable=expression-not-assigned
-  output | 'write' >> WriteToText(output_file)
+  (p | 'read'        >> ReadFromText(input_file)
+     | 'split'       >> beam.ParDo(WordExtractingDoFn())
+     | 'wrap in row' >> beam.Map(Row).with_output_types(Row)
+     | 'sql!!'       >> beam.ExternalTransform(
+         'pytest:beam:transforms:sql', QUERY, EXPANSION_SERVICE_ADDR)
+     | 'format'      >> beam.Map(lambda row: '{}: {}'.format(row.key, row.c))
+     | 'write'       >> WriteToText(output_file))
 
   result = p.run()
   result.wait_until_finish()

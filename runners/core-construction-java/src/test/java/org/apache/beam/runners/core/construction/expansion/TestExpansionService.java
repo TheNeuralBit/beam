@@ -20,8 +20,13 @@ package org.apache.beam.runners.core.construction.expansion;
 import com.google.auto.service.AutoService;
 import java.util.Map;
 import org.apache.beam.sdk.extensions.sql.SqlTransform;
+import org.apache.beam.sdk.schemas.PortableSchemaCoder;
 import org.apache.beam.sdk.transforms.Count;
 import org.apache.beam.sdk.transforms.Filter;
+import org.apache.beam.sdk.transforms.PTransform;
+import org.apache.beam.sdk.values.PCollection;
+import org.apache.beam.sdk.values.PInput;
+import org.apache.beam.sdk.values.Row;
 import org.apache.beam.vendor.grpc.v1p21p0.io.grpc.Server;
 import org.apache.beam.vendor.grpc.v1p21p0.io.grpc.ServerBuilder;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableMap;
@@ -47,7 +52,31 @@ public class TestExpansionService {
                   Filter.lessThanEq(
                       // TODO(BEAM-6587): Use strings directly rather than longs.
                       (long) spec.getPayload().toStringUtf8().charAt(0)),
-          TEST_SQL_URN, spec -> SqlTransform.query("SELECT * FROM PCOLLECTION"));
+          TEST_SQL_URN,
+              spec ->
+                  PortableRowTransform.of(SqlTransform.query(spec.getPayload().toStringUtf8())));
+    }
+  }
+
+  /**
+   * Wraps a transform that produces Rows and ensures that it uses the portable beam:coder:row:v1
+   */
+  public static class PortableRowTransform extends PTransform<PInput, PCollection<Row>> {
+    private final PTransform<PInput, PCollection<Row>> wrapped;
+
+    public PortableRowTransform(PTransform<PInput, PCollection<Row>> wrapped) {
+      this.wrapped = wrapped;
+    }
+
+    public static PortableRowTransform of(PTransform<PInput, PCollection<Row>> wrapped) {
+      return new PortableRowTransform(wrapped);
+    }
+
+    @Override
+    public PCollection<Row> expand(PInput input) {
+      PCollection<Row> pc = this.wrapped.expand(input);
+      pc.setCoder(PortableSchemaCoder.of(pc.getSchema()));
+      return pc;
     }
   }
 
