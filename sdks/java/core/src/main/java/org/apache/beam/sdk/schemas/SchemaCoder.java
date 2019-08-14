@@ -22,8 +22,9 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import org.apache.beam.sdk.annotations.Experimental;
 import org.apache.beam.sdk.annotations.Experimental.Kind;
+import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.CustomCoder;
-import org.apache.beam.sdk.coders.RowCoder;
+import org.apache.beam.sdk.schemas.Schema.FieldType;
 import org.apache.beam.sdk.transforms.SerializableFunction;
 import org.apache.beam.sdk.transforms.SerializableFunctions;
 import org.apache.beam.sdk.values.Row;
@@ -99,5 +100,9 @@ public class SchemaCoder<T> extends CustomCoder<T> {
   @Override
   public String toString() {
     return "SchemaCoder: " + rowCoder.toString();
+  }
+
+  public static <T> Coder<T> coderForFieldType(FieldType fieldType) {
+    return RowCoder.coderForFieldType(fieldType);
   }
 }
