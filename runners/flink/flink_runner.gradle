@@ -63,6 +63,17 @@ sourceSets {
   }
 }
 
+/*
+ * By default, Spotless operates on the project files only.
+ * BeamModulePlugin sets a custom configuration which we override here in order
+ * for the Flink Runner's multiple source directories to be all scanned.
+ */
+spotless {
+  java {
+    target project.sourceSets.main.allJava + project.sourceSets.test.allJava
+  }
+}
+
 test {
   systemProperty "log4j.configuration", "log4j-test.properties"
   //systemProperty "org.slf4j.simpleLogger.defaultLogLevel", "debug"
@@ -114,6 +125,7 @@ dependencies {
   testCompile library.java.hamcrest_core
   testCompile library.java.junit
   testCompile library.java.mockito_core
+  testCompile library.java.powermock
   testCompile library.java.google_api_services_bigquery
   testCompile project(":sdks:java:io:google-cloud-platform")
   testCompile library.java.jackson_dataformat_yaml
@@ -161,6 +173,9 @@ def createValidatesRunnerTask(Map m) {
         excludeCategories 'org.apache.beam.sdk.testing.UsesUnboundedSplittableParDo'
         excludeCategories 'org.apache.beam.sdk.testing.UsesTestStream'
       }
+      // TODO[BEAM-8205]: figure out if we can make the test work on Flink runner, or maybe create a
+      // new category tag and change the following line to: excludeCategories '<category tag>'.
+      exclude '**/AvroSchemaTest.class'
     }
   }
 }

@@ -472,8 +472,10 @@ class FnApiRunnerTest(unittest.TestCase):
         assert isinstance(
             restriction_tracker,
             restriction_trackers.OffsetRestrictionTracker), restriction_tracker
-        for k in range(*restriction_tracker.current_restriction()):
-          yield element[k]
+        cur = restriction_tracker.start_position()
+        while restriction_tracker.try_claim(cur):
+          yield element[cur]
+          cur += 1
 
     with self.create_pipeline() as p:
       data = ['abc', 'defghijklmno', 'pqrstuv', 'wxyz']
@@ -496,14 +498,14 @@ class FnApiRunnerTest(unittest.TestCase):
         assert isinstance(
             restriction_tracker,
             restriction_trackers.OffsetRestrictionTracker), restriction_tracker
-        for k in range(*restriction_tracker.current_restriction()):
-          if not restriction_tracker.try_claim(k):
-            return
+        cur = restriction_tracker.start_position()
+        while restriction_tracker.try_claim(cur):
           counter.inc()
-          yield element[k]
-          if k % 2 == 1:
+          yield element[cur]
+          if cur % 2 == 1:
             restriction_tracker.defer_remainder()
             return
+          cur += 1
 
     with self.create_pipeline() as p:
       data = ['abc', 'defghijklmno', 'pqrstuv', 'wxyz']
@@ -1177,6 +1179,23 @@ class FnApiRunnerTestWithGrpcMultiThreaded(FnApiRunnerTest):
                 payload=b'2')))
 
 
+class FnApiRunnerTestWithMultiWorkers(FnApiRunnerTest):
+
+  def create_pipeline(self):
+    from apache_beam.options.pipeline_options import PipelineOptions
+    pipeline_options = PipelineOptions(['--direct_num_workers', '2'])
+    p = beam.Pipeline(
+        runner=fn_api_runner.FnApiRunner(),
+        options=pipeline_options)
+    return p
+
+  def test_metrics(self):
+    raise unittest.SkipTest("This test is for a single worker only.")
+
+  def test_sdf_with_sdf_initiated_checkpointing(self):
+    raise unittest.SkipTest("This test is for a single worker only.")
+
+
 class FnApiRunnerTestWithGrpcAndMultiWorkers(FnApiRunnerTest):
 
   def create_pipeline(self):
@@ -1204,6 +1223,25 @@ class FnApiRunnerTestWithBundleRepeat(FnApiRunnerTest):
 
   def test_register_finalizations(self):
     raise unittest.SkipTest("TODO: Avoid bundle finalizations on repeat.")
+
+
+class FnApiRunnerTestWithBundleRepeatAndMultiWorkers(FnApiRunnerTest):
+
+  def create_pipeline(self):
+    from apache_beam.options.pipeline_options import PipelineOptions
+    pipeline_options = PipelineOptions(['--direct_num_workers', '2'])
+    return beam.Pipeline(
+        runner=fn_api_runner.FnApiRunner(bundle_repeat=3),
+        options=pipeline_options)
+
+  def test_register_finalizations(self):
+    raise unittest.SkipTest("TODO: Avoid bundle finalizations on repeat.")
+
+  def test_metrics(self):
+    raise unittest.SkipTest("This test is for a single worker only.")
+
+  def test_sdf_with_sdf_initiated_checkpointing(self):
+    raise unittest.SkipTest("This test is for a single worker only.")
 
 
 class FnApiRunnerSplitTest(unittest.TestCase):
@@ -1356,18 +1394,17 @@ class FnApiRunnerSplitTest(unittest.TestCase):
 
     class EnumerateProvider(beam.transforms.core.RestrictionProvider):
       def initial_restriction(self, element):
-        return (0, element)
+        return restriction_trackers.OffsetRange(0, element)
 
       def create_tracker(self, restriction):
-        return restriction_trackers.OffsetRestrictionTracker(
-            *restriction)
+        return restriction_trackers.OffsetRestrictionTracker(restriction)
 
       def split(self, element, restriction):
         # Don't do any initial splitting to simplify test.
         return [restriction]
 
       def restriction_size(self, element, restriction):
-        return restriction[1] - restriction[0]
+        return restriction.size()
 
     class EnumerateSdf(beam.DoFn):
       def process(
@@ -1375,12 +1412,11 @@ class FnApiRunnerSplitTest(unittest.TestCase):
           element,
           restriction_tracker=beam.DoFn.RestrictionParam(EnumerateProvider())):
         to_emit = []
-        for k in range(*restriction_tracker.current_restriction()):
-          if restriction_tracker.try_claim(k):
-            to_emit.append((element, k))
-            element_counter.increment()
-          else:
-            break
+        cur = restriction_tracker.start_position()
+        while restriction_tracker.try_claim(cur):
+          to_emit.append((element, cur))
+          element_counter.increment()
+          cur += 1
         # Emitting in batches for tighter testing.
         yield to_emit
 
@@ -1501,22 +1537,20 @@ class EventRecorder(object):
 class ExpandStringsProvider(beam.transforms.core.RestrictionProvider):
   """A RestrictionProvider that used for sdf related tests."""
   def initial_restriction(self, element):
-    return (0, len(element))
+    return restriction_trackers.OffsetRange(0, len(element))
 
   def create_tracker(self, restriction):
-    return restriction_trackers.OffsetRestrictionTracker(
-        restriction[0], restriction[1])
+    return restriction_trackers.OffsetRestrictionTracker(restriction)
 
   def split(self, element, restriction):
-    start, end = restriction
-    middle = (end - start) // 2
-    return [(start, middle), (middle, end)]
+    desired_bundle_size = restriction.size() // 2
+    return restriction.split(desired_bundle_size)
 
   def restriction_size(self, element, restriction):
-    return restriction[1] - restriction[0]
+    return restriction.size()
 
 
-class FnApiRunnerTestWithMultiWorkers(FnApiRunnerSplitTest):
+class FnApiRunnerSplitTestWithMultiWorkers(FnApiRunnerSplitTest):
 
   def create_pipeline(self):
     from apache_beam.options.pipeline_options import PipelineOptions

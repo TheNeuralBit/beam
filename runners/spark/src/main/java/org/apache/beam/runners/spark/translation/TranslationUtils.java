@@ -21,7 +21,6 @@ import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import java.io.Serializable;
 import java.util.HashMap;
 import java.util.Iterator;
-import java.util.List;
 import java.util.Map;
 import javax.annotation.Nonnull;
 import org.apache.beam.runners.core.InMemoryStateInternals;
@@ -78,7 +77,7 @@ public final class TranslationUtils {
   }
 
   /**
-   * A SparkKeyedCombineFn function applied to grouped KVs.
+   * A SparkCombineFn function applied to grouped KVs.
    *
    * @param <K> Grouped key type.
    * @param <InputT> Grouped values type.
@@ -86,17 +85,21 @@ public final class TranslationUtils {
    */
   public static class CombineGroupedValues<K, InputT, OutputT>
       implements Function<WindowedValue<KV<K, Iterable<InputT>>>, WindowedValue<KV<K, OutputT>>> {
-    private final SparkKeyedCombineFn<K, InputT, ?, OutputT> fn;
+    private final SparkCombineFn<KV<K, InputT>, InputT, ?, OutputT> fn;
 
-    public CombineGroupedValues(SparkKeyedCombineFn<K, InputT, ?, OutputT> fn) {
+    public CombineGroupedValues(SparkCombineFn<KV<K, InputT>, InputT, ?, OutputT> fn) {
       this.fn = fn;
     }
 
+    @SuppressWarnings("unchecked")
     @Override
     public WindowedValue<KV<K, OutputT>> call(WindowedValue<KV<K, Iterable<InputT>>> windowedKv)
         throws Exception {
       return WindowedValue.of(
-          KV.of(windowedKv.getValue().getKey(), fn.apply(windowedKv)),
+          KV.of(
+              windowedKv.getValue().getKey(),
+              fn.getCombineFn()
+                  .apply(windowedKv.getValue().getValue(), fn.ctxtForValue(windowedKv))),
           windowedKv.getTimestamp(),
           windowedKv.getWindows(),
           windowedKv.getPane());
@@ -224,7 +227,7 @@ public final class TranslationUtils {
    * @return a map of tagged {@link SideInputBroadcast}s and their {@link WindowingStrategy}.
    */
   static Map<TupleTag<?>, KV<WindowingStrategy<?, ?>, SideInputBroadcast<?>>> getSideInputs(
-      List<PCollectionView<?>> views, EvaluationContext context) {
+      Iterable<PCollectionView<?>> views, EvaluationContext context) {
     return getSideInputs(views, context.getSparkContext(), context.getPViews());
   }
 
@@ -237,7 +240,7 @@ public final class TranslationUtils {
    * @return a map of tagged {@link SideInputBroadcast}s and their {@link WindowingStrategy}.
    */
   public static Map<TupleTag<?>, KV<WindowingStrategy<?, ?>, SideInputBroadcast<?>>> getSideInputs(
-      List<PCollectionView<?>> views, JavaSparkContext context, SparkPCollectionView pviews) {
+      Iterable<PCollectionView<?>> views, JavaSparkContext context, SparkPCollectionView pviews) {
     if (views == null) {
       return ImmutableMap.of();
     } else {

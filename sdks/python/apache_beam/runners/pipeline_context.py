@@ -40,10 +40,10 @@ class Environment(object):
   Provides consistency with how the other componentes are accessed.
   """
   def __init__(self, proto):
-    self._proto = proto
+    self.proto = proto
 
   def to_runner_api(self, context):
-    return self._proto
+    return self.proto
 
   @staticmethod
   def from_runner_api(proto, context):
@@ -100,6 +100,9 @@ class _PipelineContextMap(object):
         if proto == maybe_new_proto:
           return id
     return self.put_proto(self._unique_ref(label), maybe_new_proto)
+
+  def get_id_to_proto_map(self):
+    return self._id_to_proto
 
   def put_proto(self, id, proto):
     if id in self._id_to_proto:
