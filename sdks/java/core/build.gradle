@@ -31,8 +31,13 @@ applyJavaNature(
     relocate "org.antlr.v4", getJavaRelocatedPath("org.antlr.v4")
   }
 )
+
 applyAvroNature()
 applyAntlrNature()
+avro {
+    dateTimeLogicalType = 'JODA'
+}
+
 
 generateGrammarSource {
   arguments += ["-visitor"]
