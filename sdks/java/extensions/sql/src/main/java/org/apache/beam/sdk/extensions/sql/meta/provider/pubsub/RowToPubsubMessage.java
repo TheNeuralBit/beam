@@ -31,6 +31,8 @@ import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.Row;
 import org.apache.beam.sdk.values.TypeDescriptor;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A {@link PTransform} to convert {@link Row} to {@link PubsubMessage} with JSON payload.
@@ -43,6 +45,7 @@ import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Immutabl
  */
 @Experimental
 public class RowToPubsubMessage extends PTransform<PCollection<Row>, PCollection<PubsubMessage>> {
+  private static final Logger LOG = LoggerFactory.getLogger(RowToPubsubMessage.class);
   private final PubsubJsonTableProvider.PubsubIOTableConfiguration config;
 
   private RowToPubsubMessage(PubsubJsonTableProvider.PubsubIOTableConfiguration config) {
@@ -65,8 +68,14 @@ public class RowToPubsubMessage extends PTransform<PCollection<Row>, PCollection
                 WithTimestamps.of((row) -> row.getDateTime("event_timestamp").toInstant()))
             : input;
 
+    if (input.getSchema().hasField("event_timestamp")) {
+      if (!config.useTimestampAttribute()) {
+        LOG.warn("Input schema has an \"event_timestamp\" field but table is not configured for writing to it. Values will be discarded.");
+      }
+      withTimestamp = withTimestamp.apply(DropFields.fields("event_timestamp"));
+    }
+
     return withTimestamp
-        .apply(DropFields.fields("event_timestamp"))
         .apply(ToJson.of())
         .apply(
             MapElements.into(TypeDescriptor.of(PubsubMessage.class))
