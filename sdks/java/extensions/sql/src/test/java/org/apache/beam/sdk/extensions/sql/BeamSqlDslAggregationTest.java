@@ -37,6 +37,8 @@ import org.apache.beam.sdk.testing.UsesTestStream;
 import org.apache.beam.sdk.transforms.Create;
 import org.apache.beam.sdk.transforms.SerializableFunction;
 import org.apache.beam.sdk.transforms.windowing.AfterPane;
+import org.apache.beam.sdk.transforms.windowing.AfterProcessingTime;
+import org.apache.beam.sdk.transforms.windowing.AfterWatermark;
 import org.apache.beam.sdk.transforms.windowing.DefaultTrigger;
 import org.apache.beam.sdk.transforms.windowing.FixedWindows;
 import org.apache.beam.sdk.transforms.windowing.GlobalWindows;
@@ -458,6 +460,69 @@ public class BeamSqlDslAggregationTest extends BeamSqlDslBase {
                 .addRows(3) // first bundle 1+2
                 .addRows(6) // next bundle 1+2+3
                 .addRows(10) // next bundle 1+2+3+4)
+                .getRows());
+
+    pipeline.run().waitUntilFinish();
+  }
+
+  /**
+   * Tests that a trigger set up prior to a SQL statement still is effective within the SQL
+   * statement.
+   */
+  @Test
+  @Category(UsesTestStream.class)
+  public void testCustomTriggeredTumble() throws Exception {
+    Schema inputSchema =
+        Schema.builder().addInt32Field("f_int").addDateTimeField("f_timestamp").build();
+
+    PCollection<Row> input =
+        pipeline.apply(
+            TestStream.create(inputSchema)
+                .advanceProcessingTime(Duration.standardSeconds(30))
+                .addElements(
+                    Row.withSchema(inputSchema)
+                        .addValues(1, parseTimestampWithoutTimeZone("2017-01-01 01:01:01"))
+                        .build(),
+                    Row.withSchema(inputSchema)
+                        .addValues(2, parseTimestampWithoutTimeZone("2017-01-01 01:01:01"))
+                        .build())
+                .advanceProcessingTime(Duration.standardMinutes(1))
+                .advanceWatermarkTo(parseTimestampWithoutTimeZone("2017-01-01 01:02:01").toInstant())
+                .addElements(
+                    Row.withSchema(inputSchema)
+                        .addValues(3, parseTimestampWithoutTimeZone("2017-01-01 01:02:23"))
+                        .build())
+                .addElements(
+                    Row.withSchema(inputSchema)
+                        .addValues(4, parseTimestampWithoutTimeZone("2017-01-01 01:03:46"))
+                        .build())
+                .advanceProcessingTime(Duration.standardMinutes(20))
+                .advanceWatermarkToInfinity());
+
+    String sql =
+        "SELECT SUM(f_int) AS f_int_sum FROM PCOLLECTION";
+
+    Schema outputSchema = Schema.builder().addInt32Field("fn_int_sum").build();
+
+    PCollection<Row> result =
+        input
+            .apply(
+                "Triggering",
+                Window.<Row>into(FixedWindows.of(Duration.standardMinutes(1)))
+                    .triggering(
+                        AfterWatermark.pastEndOfWindow()
+                            .withLateFirings(
+                                AfterProcessingTime.pastFirstElementInPane()
+                                    .plusDelayOf(Duration.standardMinutes(10))))
+                    .withAllowedLateness(Duration.standardMinutes(10))
+                    .discardingFiredPanes())
+            .apply("Windowed Query", SqlTransform.query(sql));
+
+    PAssert.that(result)
+        .containsInAnyOrder(
+            TestUtils.RowsBuilder.of(outputSchema)
+                .addRows(3) // first bundle 1+2
+                .addRows(7) // next bundle 3
                 .getRows());
 
     pipeline.run().waitUntilFinish();
