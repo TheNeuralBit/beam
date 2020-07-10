@@ -31,6 +31,7 @@ import java.util.Iterator;
 import java.util.List;
 import org.apache.beam.sdk.extensions.sql.impl.ParseException;
 import org.apache.beam.sdk.schemas.Schema;
+import org.apache.beam.sdk.schemas.SchemaCoder;
 import org.apache.beam.sdk.testing.PAssert;
 import org.apache.beam.sdk.testing.TestStream;
 import org.apache.beam.sdk.testing.UsesTestStream;
@@ -477,8 +478,7 @@ public class BeamSqlDslAggregationTest extends BeamSqlDslBase {
 
     PCollection<Row> input =
         pipeline.apply(
-            TestStream.create(inputSchema)
-                .advanceProcessingTime(Duration.standardSeconds(30))
+            TestStream.create(SchemaCoder.of(inputSchema))
                 .addElements(
                     Row.withSchema(inputSchema)
                         .addValues(1, parseTimestampWithoutTimeZone("2017-01-01 01:01:01"))
@@ -486,17 +486,14 @@ public class BeamSqlDslAggregationTest extends BeamSqlDslBase {
                     Row.withSchema(inputSchema)
                         .addValues(2, parseTimestampWithoutTimeZone("2017-01-01 01:01:01"))
                         .build())
-                .advanceProcessingTime(Duration.standardMinutes(1))
-                .advanceWatermarkTo(parseTimestampWithoutTimeZone("2017-01-01 01:02:01").toInstant())
                 .addElements(
                     Row.withSchema(inputSchema)
-                        .addValues(3, parseTimestampWithoutTimeZone("2017-01-01 01:02:23"))
+                        .addValues(3, parseTimestampWithoutTimeZone("2017-01-01 01:01:01"))
                         .build())
                 .addElements(
                     Row.withSchema(inputSchema)
-                        .addValues(4, parseTimestampWithoutTimeZone("2017-01-01 01:03:46"))
+                        .addValues(4, parseTimestampWithoutTimeZone("2017-01-01 01:01:01"))
                         .build())
-                .advanceProcessingTime(Duration.standardMinutes(20))
                 .advanceWatermarkToInfinity());
 
     String sql =
@@ -509,20 +506,18 @@ public class BeamSqlDslAggregationTest extends BeamSqlDslBase {
             .apply(
                 "Triggering",
                 Window.<Row>into(FixedWindows.of(Duration.standardMinutes(1)))
-                    .triggering(
-                        AfterWatermark.pastEndOfWindow()
-                            .withLateFirings(
-                                AfterProcessingTime.pastFirstElementInPane()
-                                    .plusDelayOf(Duration.standardMinutes(10))))
-                    .withAllowedLateness(Duration.standardMinutes(10))
-                    .discardingFiredPanes())
+                            .triggering(Repeatedly.forever(AfterPane.elementCountAtLeast(1)))
+                            .withAllowedLateness(Duration.ZERO)
+                            .withOnTimeBehavior(Window.OnTimeBehavior.FIRE_IF_NON_EMPTY)
+                            .accumulatingFiredPanes())
             .apply("Windowed Query", SqlTransform.query(sql));
 
     PAssert.that(result)
         .containsInAnyOrder(
             TestUtils.RowsBuilder.of(outputSchema)
                 .addRows(3) // first bundle 1+2
-                .addRows(7) // next bundle 3
+                .addRows(6) // next bundle 1+2+3
+                .addRows(10) // next bundle 1+2+3+4)
                 .getRows());
 
     pipeline.run().waitUntilFinish();
