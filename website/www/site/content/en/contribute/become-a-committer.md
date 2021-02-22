@@ -43,7 +43,7 @@ some examples:
 
 The PMC has assembled the following set of guidelines for becoming a committer.
 
-## An Apache Beam committer...
+## An Apache Beam committer
 
 ### Takes many forms
 
