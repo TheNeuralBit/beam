@@ -49,6 +49,7 @@ import io.grpc.Status.Code;
 import io.grpc.StatusRuntimeException;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
@@ -59,6 +60,7 @@ import java.util.List;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.*;
+import org.apache.arrow.vector.ipc.ArrowStreamWriter;
 import org.apache.arrow.vector.ipc.WriteChannel;
 import org.apache.arrow.vector.ipc.message.MessageSerializer;
 import org.apache.arrow.vector.types.pojo.ArrowType;
@@ -657,14 +659,16 @@ public class BigQueryIOStorageReadTest {
       org.apache.arrow.vector.ipc.message.ArrowRecordBatch records,
       double progressAtResponseStart,
       double progressAtResponseEnd) {
-    FlatBufferBuilder builder = new FlatBufferBuilder();
-    builder.finish(records.writeTo(builder));
-    ByteBuffer byteBuffer = builder.dataBuffer();
-    ArrowRecordBatch serializedRecord =
-        ArrowRecordBatch.newBuilder()
-            .setRowCount(records.getLength())
-            .setSerializedRecordBatch(ByteString.copyFrom(byteBuffer))
-            .build();
+    ArrowRecordBatch serializedRecord;
+    try (ByteArrayOutputStream os = new ByteArrayOutputStream()) {
+      MessageSerializer.serialize(new WriteChannel(Channels.newChannel(os)), records);
+      serializedRecord = ArrowRecordBatch.newBuilder()
+          .setRowCount(records.getLength())
+          .setSerializedRecordBatch(ByteString.copyFrom(os.toByteArray()))
+          .build();
+    } catch (IOException e) {
+      throw new RuntimeException("Error writing to byte array output stream", e);
+    }
 
     return ReadRowsResponse.newBuilder()
         .setArrowRecordBatch(serializedRecord)
